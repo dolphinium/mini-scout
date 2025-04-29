@@ -4,96 +4,52 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mini Nightscout</title>
-    <!-- Chart.js CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-    <!-- Date/time library -->
-    <script src="https://cdn.jsdelivr.net/npm/luxon@3.3.0/build/global/luxon.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.min.js"></script>
-    <!-- Font Awesome for icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Custom CSS -->
     <link rel="stylesheet" href="/static/css/style.css">
+    <!-- Include Chart.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="container">
         <header>
             <h1>Mini Nightscout</h1>
-            <p class="subtitle">LibreLink Up Glucose Monitor</p>
+            <p class="subtitle">LibreLink Up Data Viewer</p>
         </header>
-
-        <div class="latest-reading">
-            <div class="reading-value">
-                <span id="latest-value">---</span>
-                <span class="unit">mg/dL</span>
-                <span id="trend-arrow" class="trend-arrow"></span>
+        
+        <div class="current-reading">
+            <div class="value-container">
+                <span id="current-value">---</span>
+                <span id="units">mg/dL</span>
+                <span id="trend-arrow"></span>
             </div>
-            <div class="reading-info">
-                <div id="time-ago">--</div>
-                <div id="reading-time">--:--</div>
+            <div class="time-ago">
+                <span id="time-ago">--</span>
+                <span>min ago</span>
             </div>
+            <button id="refresh-button">Refresh Now</button>
         </div>
-
+        
         <div class="chart-container">
             <canvas id="glucose-chart"></canvas>
         </div>
-
-        <div class="stats-container">
-            <div class="stat-box">
-                <div class="stat-title">Average</div>
-                <div class="stat-value" id="average-value">---</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-title">Time in Range</div>
-                <div class="stat-value" id="time-in-range">---%</div>
-            </div>
-            <div class="stat-box">
-                <div class="stat-title">Readings</div>
-                <div class="stat-value" id="readings-count">--</div>
+        
+        <div class="controls">
+            <div class="time-range">
+                <label for="time-range">Time Range:</label>
+                <select id="time-range">
+                    <option value="3">3 hours</option>
+                    <option value="6">6 hours</option>
+                    <option value="12">12 hours</option>
+                    <option value="24" selected>24 hours</option>
+                </select>
             </div>
         </div>
-
-        <div class="range-selector">
-            <button class="time-button" data-hours="3">3h</button>
-            <button class="time-button" data-hours="6">6h</button>
-            <button class="time-button active" data-hours="12">12h</button>
-            <button class="time-button" data-hours="24">24h</button>
-        </div>
-
-        <div class="status-indicator">
-            <div id="status-dot" class="status-dot offline"></div>
-            <span id="status-text">Offline</span>
-            <span id="last-update"></span>
+        
+        <div class="status">
+            <p>Last update: <span id="last-update">Never</span></p>
+            <p>Auto-refresh: <span id="auto-refresh-status">On</span></p>
         </div>
     </div>
-
-    <!-- Settings modal -->
-    <div class="settings-modal" id="settings-modal">
-        <div class="settings-content">
-            <span class="close-button">&times;</span>
-            <h2>Settings</h2>
-            <div class="settings-form">
-                <div class="form-group">
-                    <label for="range-low">Low Range (mg/dL)</label>
-                    <input type="number" id="range-low" value="70">
-                </div>
-                <div class="form-group">
-                    <label for="range-high">High Range (mg/dL)</label>
-                    <input type="number" id="range-high" value="180">
-                </div>
-                <div class="form-group">
-                    <label for="refresh-interval">Refresh Interval (seconds)</label>
-                    <input type="number" id="refresh-interval" value="60" min="30">
-                </div>
-                <button id="save-settings">Save Settings</button>
-            </div>
-        </div>
-    </div>
-
-    <button id="settings-button" class="settings-button">
-        <i class="fas fa-cog"></i>
-    </button>
-
-    <!-- Custom JavaScript -->
+    
     <script src="/static/js/script.js"></script>
 </body>
 </html>

@@ -3,95 +3,109 @@ version: '3.8'
 services:
   # MongoDB service
   mongo:
-    image: mongo:6.0
+    image: mongo:latest
     container_name: mini_nightscout_mongo
+    restart: unless-stopped
     ports:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
-    restart: unless-stopped
+    environment:
+      - MONGO_INITDB_DATABASE=mini_nightscout
+    networks:
+      - app_network
 
-  # Redis service (for Celery broker)
+  # Redis service (for Celery)
   redis:
-    image: redis:7.0-alpine
+    image: redis:latest
     container_name: mini_nightscout_redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
-    restart: unless-stopped
+    networks:
+      - app_network
 
-  # FastAPI application service
+  # FastAPI application
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: mini_nightscout_app
+    restart: unless-stopped
+    depends_on:
+      - mongo
+      - redis
     ports:
       - "8000:8000"
     volumes:
-      - .:/app
-    depends_on:
-      - mongo
-      - redis
+      - ./:/app
     environment:
-      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - MONGO_URI=mongodb://mongo:27017/
+      - MONGO_DB=mini_nightscout
       - REDIS_URL=redis://redis:6379/0
       - LINK_UP_USERNAME=${LINK_UP_USERNAME}
       - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
       - LINK_UP_REGION=${LINK_UP_REGION:-EU}
       - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+      - FETCH_INTERVAL=${FETCH_INTERVAL:-60}
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-    restart: unless-stopped
+    networks:
+      - app_network
 
-  # Celery worker service
+  # Celery worker
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: mini_nightscout_worker
-    volumes:
-      - .:/app
+    restart: unless-stopped
     depends_on:
+      - app
       - mongo
       - redis
+    volumes:
+      - ./:/app
     environment:
-      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - MONGO_URI=mongodb://mongo:27017/
+      - MONGO_DB=mini_nightscout
       - REDIS_URL=redis://redis:6379/0
       - LINK_UP_USERNAME=${LINK_UP_USERNAME}
       - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
       - LINK_UP_REGION=${LINK_UP_REGION:-EU}
       - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+      - FETCH_INTERVAL=${FETCH_INTERVAL:-60}
     command: celery -A app.celery_app worker --loglevel=info
-    restart: unless-stopped
+    networks:
+      - app_network
 
-  # Celery beat service (scheduler)
+  # Celery beat scheduler
   beat:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: mini_nightscout_beat
-    volumes:
-      - .:/app
+    restart: unless-stopped
     depends_on:
+      - app
       - mongo
       - redis
+    volumes:
+      - ./:/app
     environment:
-      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - MONGO_URI=mongodb://mongo:27017/
+      - MONGO_DB=mini_nightscout
       - REDIS_URL=redis://redis:6379/0
       - LINK_UP_USERNAME=${LINK_UP_USERNAME}
       - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
       - LINK_UP_REGION=${LINK_UP_REGION:-EU}
       - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+      - FETCH_INTERVAL=${FETCH_INTERVAL:-60}
     command: celery -A app.celery_app beat --loglevel=info
-    restart: unless-stopped
+    networks:
+      - app_network
 
+# Persistent volumes
 volumes:
   mongo_data:
   redis_data:
+
+# Network configuration
+networks:
+  app_network:
+    driver: bridge

@@ -1,105 +1,92 @@
+"""
+Celery tasks for fetching glucose data.
+"""
+
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import List, Dict, Any
+
+from celery import Task
 
 from app.celery_app import celery_app
-from app.services import librelinkup, database
-from app.config import config
+from app.services.librelinkup import llu_service
+from app.services.database import db_service
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, config['log_level'], logging.INFO),
-    format='[%(levelname)s][%(asctime)s][%(name)s]: %(message)s'
-)
+# Set up logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
-def fetch_glucose_data(self) -> Optional[Dict[str, Any]]:
-    """Celery task to fetch glucose data from LibreLink Up and save to MongoDB.
+
+class GlucoseTask(Task):
+    """Base class for glucose-related tasks with error handling."""
     
-    This task:
-    1. Fetches glucose data from LibreLink Up API
-    2. Normalizes and processes the data
-    3. Saves it to MongoDB
+    def on_failure(self, exc, task_id, args, kwargs, einfo):
+        """Handle task failure by logging the error."""
+        logger.error(f"Task {task_id} failed: {exc}")
+        super().on_failure(exc, task_id, args, kwargs, einfo)
+
+
+@celery_app.task(bind=True, base=GlucoseTask, max_retries=3, default_retry_delay=60)
+def fetch_glucose_data(self) -> Dict[str, Any]:
+    """
+    Fetch glucose data from LibreLink Up and store in database.
     
     Returns:
-        Dictionary with metadata about the fetch operation
+        Dict: Summary of the operation results
     """
-    start_time = datetime.now(timezone.utc)
-    logger.info(f"Starting glucose data fetch task at {start_time}")
-    
     try:
-        # First make sure we can connect to LibreLink Up
-        logger.info("Testing LibreLink Up connection...")
-        session = requests.Session()
-        login_success = librelinkup.login(session)
+        logger.info("Starting task to fetch glucose data")
+        task_start_time = datetime.utcnow()
         
-        if not login_success:
-            logger.error("Failed to login to LibreLink Up")
-            self.retry(exc=Exception("Failed to login to LibreLink Up"))
-            return None
-            
-        connections = librelinkup.get_connections(session)
-        if not connections:
-            logger.error("Failed to get LibreLink Up connections")
-            self.retry(exc=Exception("Failed to get LibreLink Up connections"))
-            return None
-            
-        patient_id = librelinkup.select_connection(connections)
-        if not patient_id:
-            logger.error("Failed to select a LibreLink Up patient connection")
-            self.retry(exc=Exception("Failed to select a LibreLink Up patient connection"))
-            return None
-            
-        logger.info(f"Successfully connected to LibreLink Up for patient {patient_id}")
+        # Fetch data from LibreLink Up
+        latest_reading, historical_readings = llu_service.fetch_and_process_data()
         
-        # Fetch glucose data from LibreLink Up
-        logger.info("Fetching glucose data...")
-        glucose_data = librelinkup.get_glucose_data(session, patient_id)
+        if not latest_reading:
+            logger.error("Failed to fetch valid glucose data")
+            return {
+                "success": False,
+                "timestamp": datetime.utcnow().isoformat(),
+                "error": "Failed to fetch glucose data",
+                "inserted_count": 0
+            }
         
-        if not glucose_data:
-            logger.error("Failed to fetch glucose data")
-            # Retry the task
-            self.retry(exc=Exception("Failed to fetch glucose data"))
-            return None
-            
-        logger.info(f"Successfully fetched glucose data. Latest value: {glucose_data.get('latest', {}).get('ValueInMgPerDl')}")
-        logger.info(f"Number of history points: {len(glucose_data.get('history', []))}")
+        # Store latest reading
+        latest_inserted = db_service.insert_entry(latest_reading)
         
-        # Save data to MongoDB
-        logger.info("Saving data to MongoDB...")
-        save_success = database.save_glucose_data(glucose_data)
+        # Only process historical readings if we have them
+        if historical_readings:
+            historical_inserted = db_service.insert_entries(historical_readings)
+        else:
+            historical_inserted = 0
         
-        if not save_success:
-            logger.error("Failed to save glucose data to MongoDB")
-            # Retry the task
-            self.retry(exc=Exception("Failed to save glucose data to MongoDB"))
-            return None
-        
-        # Calculate task stats
-        end_time = datetime.now(timezone.utc)
-        execution_time = (end_time - start_time).total_seconds()
-        
-        # Get stats for return value
-        latest_reading = glucose_data.get('latest', {})
-        history_count = len(glucose_data.get('history', []))
-        
+        # Prepare result
+        total_inserted = (1 if latest_inserted else 0) + historical_inserted
         result = {
-            'success': True,
-            'timestamp': end_time,
-            'execution_time_seconds': execution_time,
-            'latest_value': latest_reading.get('ValueInMgPerDl'),
-            'latest_trend': latest_reading.get('TrendArrow'),
-            'history_count': history_count
+            "success": True,
+            "timestamp": datetime.utcnow().isoformat(),
+            "latest_reading": {
+                "timestamp": latest_reading["device_timestamp"].isoformat(),
+                "sgv": latest_reading["sgv"],
+                "direction": latest_reading["direction"],
+                "inserted": latest_inserted
+            },
+            "historical_count": len(historical_readings),
+            "inserted_count": total_inserted,
+            "execution_time_seconds": (datetime.utcnow() - task_start_time).total_seconds()
         }
         
-        logger.info(f"Glucose data fetch task completed successfully in {execution_time:.2f} seconds")
-        logger.info(f"Latest glucose value: {result['latest_value']} mg/dL, Trend: {result['latest_trend']}")
-        
+        logger.info(f"Glucose data fetch completed: {total_inserted} new entries added")
         return result
-    
+        
     except Exception as e:
-        logger.exception(f"Error in glucose data fetch task: {e}")
-        # Retry the task
-        self.retry(exc=e)
-        return None
+        logger.error(f"Error in fetch_glucose_data task: {e}")
+        # Retry the task with exponential backoff
+        retry_count = self.request.retries
+        self.retry(exc=e, countdown=60 * (2 ** retry_count))
+        
+        return {
+            "success": False,
+            "timestamp": datetime.utcnow().isoformat(),
+            "error": str(e),
+            "retry_count": retry_count
+        }
