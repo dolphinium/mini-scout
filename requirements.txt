@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+celery
+redis
+pymongo
+requests
+python-dotenv
+jinja2

@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # MongoDB service
+  mongo:
+    image: mongo:6.0
+    container_name: mini_nightscout_mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+  # Redis service (for Celery broker)
+  redis:
+    image: redis:7.0-alpine
+    container_name: mini_nightscout_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+  # FastAPI application service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini_nightscout_app
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      - mongo
+      - redis
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - REDIS_URL=redis://redis:6379/0
+      - LINK_UP_USERNAME=${LINK_UP_USERNAME}
+      - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
+      - LINK_UP_REGION=${LINK_UP_REGION:-EU}
+      - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # Celery worker service
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini_nightscout_worker
+    volumes:
+      - .:/app
+    depends_on:
+      - mongo
+      - redis
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - REDIS_URL=redis://redis:6379/0
+      - LINK_UP_USERNAME=${LINK_UP_USERNAME}
+      - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
+      - LINK_UP_REGION=${LINK_UP_REGION:-EU}
+      - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+    command: celery -A app.celery_app worker --loglevel=info
+    restart: unless-stopped
+
+  # Celery beat service (scheduler)
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mini_nightscout_beat
+    volumes:
+      - .:/app
+    depends_on:
+      - mongo
+      - redis
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/mini_nightscout
+      - REDIS_URL=redis://redis:6379/0
+      - LINK_UP_USERNAME=${LINK_UP_USERNAME}
+      - LINK_UP_PASSWORD=${LINK_UP_PASSWORD}
+      - LINK_UP_REGION=${LINK_UP_REGION:-EU}
+      - LINK_UP_CONNECTION=${LINK_UP_CONNECTION}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - GLUCOSE_FETCH_INTERVAL=${GLUCOSE_FETCH_INTERVAL:-60}
+    command: celery -A app.celery_app beat --loglevel=info
+    restart: unless-stopped
+
+volumes:
+  mongo_data:
+  redis_data:
