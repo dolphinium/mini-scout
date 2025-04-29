@@ -1,1 +1,38 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables and secrets
 .env
+.env.*
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# MongoDB data directory
+data/
+
+# Logs
+*.log
+
+# Docker volumes
+mongo_data/
+redis_data/
+
+# Temporary files
+.DS_Store
+Thumbs.db
