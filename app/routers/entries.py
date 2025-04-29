@@ -2,10 +2,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, BackgroundTasks
 from pydantic import BaseModel
 
-from app.services import database
+from app.services import database, librelinkup
+from app.services.database import parse_timestamp
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -42,14 +43,11 @@ def _format_reading(raw_reading: Dict[str, Any]) -> GlucoseReading:
     """Format a raw glucose reading into a response model."""
     # Extract timestamp
     timestamp_str = raw_reading.get('Timestamp', '')
-    # Use parsed timestamp if available, otherwise now
+    # Use parsed timestamp if available, otherwise parse it or use now
     if 'parsedTimestamp' in raw_reading:
         timestamp = raw_reading['parsedTimestamp']
     elif timestamp_str:
-        try:
-            timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        except ValueError:
-            timestamp = datetime.now(timezone.utc)
+        timestamp = parse_timestamp(timestamp_str) or datetime.now(timezone.utc)
     else:
         timestamp = datetime.now(timezone.utc)
     
@@ -126,6 +124,44 @@ async def get_glucose_history(hours: int = Query(24, ge=1, le=168)):
     readings.sort(key=lambda r: r.timestamp, reverse=True)
     
     return GlucoseResponse(readings=readings)
+
+
+@router.post("/fetch")
+async def trigger_fetch():
+    """Manually trigger a fetch of glucose data from LibreLink Up."""
+    try:
+        # Fetch data from LibreLink Up
+        glucose_data = librelinkup.fetch_glucose_data_with_retry(max_retries=1)
+        
+        if not glucose_data:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to fetch glucose data from LibreLink Up"
+            )
+        
+        # Save data to MongoDB
+        save_success = database.save_glucose_data(glucose_data)
+        
+        if not save_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save glucose data to MongoDB"
+            )
+        
+        # Return success response
+        return {
+            "status": "success",
+            "message": "Glucose data fetched and stored successfully",
+            "latest_value": glucose_data.get('latest', {}).get('ValueInMgPerDl'),
+            "history_count": len(glucose_data.get('history', []))
+        }
+    
+    except Exception as e:
+        logger.exception(f"Error in manual fetch: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching glucose data: {str(e)}"
+        )
 
 
 @router.get("/stats")

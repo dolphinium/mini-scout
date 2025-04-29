@@ -29,16 +29,45 @@ def fetch_glucose_data(self) -> Optional[Dict[str, Any]]:
     logger.info(f"Starting glucose data fetch task at {start_time}")
     
     try:
+        # First make sure we can connect to LibreLink Up
+        logger.info("Testing LibreLink Up connection...")
+        session = requests.Session()
+        login_success = librelinkup.login(session)
+        
+        if not login_success:
+            logger.error("Failed to login to LibreLink Up")
+            self.retry(exc=Exception("Failed to login to LibreLink Up"))
+            return None
+            
+        connections = librelinkup.get_connections(session)
+        if not connections:
+            logger.error("Failed to get LibreLink Up connections")
+            self.retry(exc=Exception("Failed to get LibreLink Up connections"))
+            return None
+            
+        patient_id = librelinkup.select_connection(connections)
+        if not patient_id:
+            logger.error("Failed to select a LibreLink Up patient connection")
+            self.retry(exc=Exception("Failed to select a LibreLink Up patient connection"))
+            return None
+            
+        logger.info(f"Successfully connected to LibreLink Up for patient {patient_id}")
+        
         # Fetch glucose data from LibreLink Up
-        glucose_data = librelinkup.fetch_glucose_data_with_retry()
+        logger.info("Fetching glucose data...")
+        glucose_data = librelinkup.get_glucose_data(session, patient_id)
         
         if not glucose_data:
             logger.error("Failed to fetch glucose data")
             # Retry the task
             self.retry(exc=Exception("Failed to fetch glucose data"))
             return None
+            
+        logger.info(f"Successfully fetched glucose data. Latest value: {glucose_data.get('latest', {}).get('ValueInMgPerDl')}")
+        logger.info(f"Number of history points: {len(glucose_data.get('history', []))}")
         
         # Save data to MongoDB
+        logger.info("Saving data to MongoDB...")
         save_success = database.save_glucose_data(glucose_data)
         
         if not save_success:

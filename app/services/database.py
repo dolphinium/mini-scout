@@ -1,4 +1,5 @@
 import logging
+import json
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Union
 
@@ -58,6 +59,46 @@ def close_connection() -> None:
         logger.info("Closed MongoDB connection")
 
 
+def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
+    """Parse timestamp string from various formats to datetime object.
+    
+    Args:
+        timestamp_str: Timestamp string to parse
+        
+    Returns:
+        datetime object or None if parsing fails
+    """
+    if not timestamp_str:
+        return None
+        
+    # Try different formats
+    formats = [
+        # ISO format with Z
+        lambda ts: datetime.fromisoformat(ts.replace('Z', '+00:00')),
+        # US format MM/DD/YYYY HH:MM:SS AM/PM
+        lambda ts: datetime.strptime(ts, '%m/%d/%Y %I:%M:%S %p'),
+        # US format without seconds
+        lambda ts: datetime.strptime(ts, '%m/%d/%Y %I:%M %p'),
+        # EU format DD/MM/YYYY HH:MM:SS
+        lambda ts: datetime.strptime(ts, '%d/%m/%Y %H:%M:%S'),
+        # EU format without seconds
+        lambda ts: datetime.strptime(ts, '%d/%m/%Y %H:%M'),
+    ]
+    
+    for parse_func in formats:
+        try:
+            dt = parse_func(timestamp_str)
+            # Ensure timezone awareness
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except (ValueError, TypeError):
+            continue
+            
+    logger.warning(f"Could not parse timestamp: {timestamp_str}")
+    return None
+
+
 def save_glucose_data(glucose_data: Dict[str, Any]) -> bool:
     """Save glucose data to MongoDB.
     
@@ -68,6 +109,13 @@ def save_glucose_data(glucose_data: Dict[str, Any]) -> bool:
         bool: True if successful, False otherwise
     """
     try:
+        # Validate input data
+        if not isinstance(glucose_data, dict):
+            logger.error(f"Invalid glucose data type: {type(glucose_data)}")
+            return False
+            
+        logger.info(f"Saving glucose data: {json.dumps(glucose_data, default=str)[:200]}...")
+        
         # Get the collections
         latest_collection = get_collection('latest_readings')
         history_collection = get_collection('glucose_history')
@@ -75,62 +123,56 @@ def save_glucose_data(glucose_data: Dict[str, Any]) -> bool:
         # Save latest reading
         latest_reading = glucose_data.get('latest', {})
         if latest_reading:
+            logger.info(f"Processing latest reading: {json.dumps(latest_reading, default=str)}")
+            
             # Add server timestamp
             latest_reading['serverTimestamp'] = datetime.now(timezone.utc)
             
             # Extract timestamp from the reading
             timestamp_str = latest_reading.get('Timestamp', '')
             if timestamp_str:
-                try:
-                    # Parse timestamp - format may vary
-                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                    latest_reading['parsedTimestamp'] = timestamp
-                except ValueError:
-                    logger.warning(f"Could not parse timestamp: {timestamp_str}")
+                parsed_timestamp = parse_timestamp(timestamp_str)
+                if parsed_timestamp:
+                    latest_reading['parsedTimestamp'] = parsed_timestamp
             
             # Insert or update latest reading
-            latest_collection.replace_one(
+            result = latest_collection.replace_one(
                 {'_id': 'latest'},  # Use a fixed ID for the latest reading
                 {'_id': 'latest', 'data': latest_reading},
                 upsert=True
             )
             
-            logger.info(f"Saved latest reading: {latest_reading.get('ValueInMgPerDl')} mg/dL")
+            logger.info(f"Saved latest reading: {latest_reading.get('ValueInMgPerDl')} mg/dL. " +
+                      f"Modified: {result.modified_count}, Upserted: {result.upserted_id is not None}")
         
         # Save historical data
         history_points = glucose_data.get('history', [])
         if history_points:
             # Process and save each history point
-            bulk_ops = []
             for point in history_points:
-                # Generate a unique ID using the timestamp
+                # Parse timestamp
                 timestamp_str = point.get('Timestamp', '')
                 if not timestamp_str:
                     continue
                 
-                try:
-                    # Parse timestamp
-                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                    point['parsedTimestamp'] = timestamp
+                parsed_timestamp = parse_timestamp(timestamp_str)
+                if parsed_timestamp:
+                    point['parsedTimestamp'] = parsed_timestamp
                     
                     # Create a unique ID from timestamp
-                    point_id = f"{timestamp.strftime('%Y%m%d%H%M%S')}"
+                    point_id = f"{parsed_timestamp.strftime('%Y%m%d%H%M%S')}"
                     
-                    # Add to bulk operations (upsert to avoid duplicates)
-                    bulk_ops.append({
-                        'replaceOne': {
-                            'filter': {'_id': point_id},
-                            'replacement': {'_id': point_id, 'data': point},
-                            'upsert': True
-                        }
-                    })
-                except ValueError:
-                    logger.warning(f"Could not parse timestamp for history point: {timestamp_str}")
+                    try:
+                        # Save each point individually instead of bulk operation
+                        history_collection.replace_one(
+                            {'_id': point_id},
+                            {'_id': point_id, 'data': point},
+                            upsert=True
+                        )
+                    except PyMongoError as e:
+                        logger.error(f"Error saving history point {point_id}: {e}")
             
-            # Execute bulk operation if there are any operations
-            if bulk_ops:
-                history_collection.bulk_write(bulk_ops)
-                logger.info(f"Saved {len(bulk_ops)} history points")
+            logger.info(f"Saved {len(history_points)} history points")
         
         return True
     
